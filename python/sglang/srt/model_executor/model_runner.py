@@ -35,11 +35,6 @@ from sglang.srt.distributed import (
     set_custom_all_reduce,
 )
 from sglang.srt.distributed.parallel_state import monkey_patch_vllm_parallel_state
-from sglang.srt.layers.attention.double_sparsity_backend import DoubleSparseAttnBackend
-from sglang.srt.layers.attention.flashinfer_backend import FlashInferAttnBackend
-from sglang.srt.layers.attention.flashinfer_mla_backend import FlashInferMLAAttnBackend
-from sglang.srt.layers.attention.torch_native_backend import TorchNativeAttnBackend
-from sglang.srt.layers.attention.triton_backend import TritonAttnBackend
 from sglang.srt.layers.dp_attention import (
     get_attention_tp_group,
     get_attention_tp_size,
@@ -77,13 +72,6 @@ from sglang.srt.utils import (
     set_cpu_offload_max_bytes,
     set_cuda_arch,
 )
-from sglang.utils import get_exception_traceback
-
-is_hip_ = is_hip()
-
-if is_hip_:
-    from sglang.srt.layers.attention.aiter_backend import AiterAttnBackend
-    from sglang.srt.layers.attention.aiter_decode_backend import AiterDecodeAttnBackend
 
 logger = logging.getLogger(__name__)
 
@@ -647,7 +635,7 @@ class ModelRunner:
         if self.server_args.kv_cache_dtype == "auto":
             self.kv_cache_dtype = self.dtype
         elif self.server_args.kv_cache_dtype == "fp8_e5m2":
-            if is_hip_:  # Using natively supported format
+            if is_hip():  # Using natively supported format
                 self.kv_cache_dtype = torch.float8_e5m2fnuz
             else:
                 self.kv_cache_dtype = torch.float8_e5m2
@@ -784,59 +772,51 @@ class ModelRunner:
 
     def init_attention_backend(self):
         """Init attention kernel backend."""
-        if is_cuda():
-            if self.server_args.attention_backend == "flashinfer":
-                # Init streams
-                if self.server_args.speculative_algorithm == "EAGLE":
-                    self.plan_stream_for_flashinfer = torch.cuda.Stream()
+        if self.server_args.attention_backend == "flashinfer":
+            from sglang.srt.layers.attention.flashinfer_backend import (
+                FlashInferAttnBackend,
+            )
 
-                self.attn_backend = FlashInferAttnBackend(self)
-            elif self.server_args.attention_backend == "triton":
-                assert self.sliding_window_size is None, (
-                    "Window attention is not supported in the triton attention backend. "
-                    "Please use `--attention-backend flashinfer`."
+            # Init streams
+            if self.server_args.speculative_algorithm == "EAGLE":
+                self.plan_stream_for_flashinfer = torch.cuda.Stream()
+
+            self.attn_backend = FlashInferAttnBackend(self)
+        elif self.server_args.attention_backend == "triton":
+            assert self.sliding_window_size is None, (
+                "Window attention is not supported in the triton attention backend. "
+                "Please use `--attention-backend flashinfer`."
+            )
+            assert not self.model_config.is_encoder_decoder, (
+                "Cross attention is not supported in the triton attention backend. "
+                "Please use `--attention-backend flashinfer`."
+            )
+            if self.server_args.enable_double_sparsity:
+                from sglang.srt.layers.attention.double_sparsity_backend import (
+                    DoubleSparseAttnBackend,
                 )
-                assert not self.model_config.is_encoder_decoder, (
-                    "Cross attention is not supported in the triton attention backend. "
-                    "Please use `--attention-backend flashinfer`."
-                )
-                if self.server_args.enable_double_sparsity:
-                    self.attn_backend = DoubleSparseAttnBackend(self)
-                else:
-                    self.attn_backend = TritonAttnBackend(self)
-            elif self.server_args.attention_backend == "torch_native":
-                self.attn_backend = TorchNativeAttnBackend(self)
-            elif self.server_args.attention_backend == "flashinfer_mla":
-                self.attn_backend = FlashInferMLAAttnBackend(self)
+
+                self.attn_backend = DoubleSparseAttnBackend(self)
             else:
-                raise ValueError(
-                    f"Invalid attention backend: {self.server_args.attention_backend}"
-                )
-        elif is_hip_:
-            # AMD hip supported attention backends
-            if self.server_args.attention_backend == "aiter":
-                self.attn_backend = AiterAttnBackend(self)
-            elif self.server_args.attention_backend == "aiter_decode":
-                self.attn_backend = AiterDecodeAttnBackend(self)
-            elif self.server_args.attention_backend == "triton":
-                assert self.sliding_window_size is None, (
-                    "Window attention is not supported in the triton attention backend. "
-                    "Please use `--attention-backend flashinfer`."
-                )
-                assert not self.model_config.is_encoder_decoder, (
-                    "Cross attention is not supported in the triton attention backend. "
-                    "Please use `--attention-backend flashinfer`."
-                )
-                if self.server_args.enable_double_sparsity:
-                    self.attn_backend = DoubleSparseAttnBackend(self)
-                else:
-                    self.attn_backend = TritonAttnBackend(self)
-            elif self.server_args.attention_backend == "torch_native":
-                self.attn_backend = TorchNativeAttnBackend(self)
-            else:
-                raise ValueError(
-                    f"Invalid attention backend: {self.server_args.attention_backend}"
-                )
+                from sglang.srt.layers.attention.triton_backend import TritonAttnBackend
+
+                self.attn_backend = TritonAttnBackend(self)
+        elif self.server_args.attention_backend == "torch_native":
+            from sglang.srt.layers.attention.torch_native_backend import (
+                TorchNativeAttnBackend,
+            )
+
+            self.attn_backend = TorchNativeAttnBackend(self)
+        elif self.server_args.attention_backend == "flashinfer_mla":
+            from sglang.srt.layers.attention.flashinfer_mla_backend import (
+                FlashInferMLAAttnBackend,
+            )
+
+            self.attn_backend = FlashInferMLAAttnBackend(self)
+        else:
+            raise ValueError(
+                f"Invalid attention backend: {self.server_args.attention_backend}"
+            )
 
     def init_double_sparsity_channel_config(self, selected_channel):
         selected_channel = "." + selected_channel + "_proj"
@@ -959,45 +939,6 @@ class ModelRunner:
             # Normal mode: Put CPU-heavy tasks here. They will be overlapped with the forward pass.
             sampling_info.update_regex_vocab_mask()
         sampling_info.apply_logits_bias(logits_output.next_token_logits)
-
-    def update_output_logprobs(
-        self,
-        logits_output: LogitsProcessorOutput,
-        sampling_info: SamplingBatchInfo,
-        top_logprobs_nums: List[int],
-        token_ids_logprobs: List[int],
-        next_token_ids: torch.Tensor,
-        *,
-        num_tokens_per_req: List[int],
-    ):
-        """Update the logits_output's output logprob based on next_token_ids
-
-        Args:
-            logits_output: The logits output from the model forward
-            sampling_info: Sampling info for logprob calculation
-            top_logprobs_nums: Number of logprobs per request.
-            next_token_ids: Next token ids.
-            num_tokens_per_req: The number of tokens per request.
-
-        Returns:
-            A list of next_token_ids
-        """
-        self._preprocess_logits(logits_output, sampling_info)
-        # We should repeat top_logprobs_nums to match num_tokens_per_req.
-        top_logprobs_nums_repeat_interleaved = []
-        token_ids_logprobs_repeat_interleaved = []
-        for num, num_tokens in zip(top_logprobs_nums, num_tokens_per_req):
-            top_logprobs_nums_repeat_interleaved.extend([num] * num_tokens)
-        for token_ids, num_tokens in zip(token_ids_logprobs, num_tokens_per_req):
-            token_ids_logprobs_repeat_interleaved.extend([token_ids] * num_tokens)
-        self.sampler(
-            logits_output,
-            sampling_info,
-            True,
-            top_logprobs_nums_repeat_interleaved,
-            token_ids_logprobs_repeat_interleaved,
-            batch_next_token_ids=next_token_ids,
-        )
 
     def sample(
         self,
