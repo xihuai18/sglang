@@ -150,8 +150,7 @@ def grouped_topk(
     return topk_weights.to(torch.float32), topk_ids.to(torch.int32)
 
 
-@torch.compile(dynamic=True, backend=get_compiler_backend())
-def biased_grouped_topk(
+def biased_grouped_topk_impl(
     hidden_states: torch.Tensor,
     gating_output: torch.Tensor,
     correction_bias: torch.Tensor,
