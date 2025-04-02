@@ -170,10 +170,15 @@ class BaseGrammarBackend(ABC):
 
 
 class ReasonerGrammarObject(ABC):
-    def __init__(self, grammar:Optional[BaseGrammarObject]=None, think_end_id=0):
+    def __init__(
+        self,
+        grammar: Optional[BaseGrammarObject] = None,
+        think_end_id: int = 0,
+        is_in_reasoning: bool = True,
+    ):
         self.grammar = grammar
         self.think_end_id = think_end_id
-        self.is_in_reasoning = True
+        self.is_in_reasoning = is_in_reasoning
 
     @property
     def finished(self):
@@ -212,15 +217,23 @@ class ReasonerGrammarBackend(ABC):
         self.grammar_backend = grammar_backend
         self.think_end_id = think_end_id
 
-    def get_cached_value(self, key: Tuple[str, str]) -> Optional[ReasonerGrammarObject]:
+    def get_cached_value(
+        self, key: Tuple[str, str], is_in_reasoning: bool = True
+    ) -> Optional[ReasonerGrammarObject]:
         grammar = self.grammar_backend.get_cached_value(key)
-        return ReasonerGrammarObject(grammar, self.think_end_id) if grammar else None
+        return (
+            ReasonerGrammarObject(grammar, self.think_end_id, is_in_reasoning)
+            if grammar
+            else None
+        )
 
-    def get_future_value(self, key: Tuple[str, str]) -> Future:
+    def get_future_value(
+        self, key: Tuple[str, str], is_in_reasoning: bool = True
+    ) -> Future:
         grammar = Future()
         self.grammar_backend.get_future_value(key).add_done_callback(
             lambda f: grammar.set_result(
-                ReasonerGrammarObject(f.result(), self.think_end_id)
+                ReasonerGrammarObject(f.result(), self.think_end_id, is_in_reasoning)
             )
         )
         return grammar
