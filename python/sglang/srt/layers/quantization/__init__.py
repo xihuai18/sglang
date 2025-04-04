@@ -40,6 +40,8 @@ except ImportError:
     ) = DummyConfig
     MarlinConfig = QQQConfig = Int8TpuConfig = DummyConfig
 
+
+from sglang.srt.layers.linear import LinearBase, UnquantizedLinearMethod
 from sglang.srt.layers.quantization.awq import AWQConfig
 from sglang.srt.layers.quantization.base_config import QuantizationConfig
 from sglang.srt.layers.quantization.blockwise_int8 import BlockInt8Config
@@ -186,8 +188,10 @@ def get_linear_quant_method(
 
 
 def gptq_get_quant_method(self, layer, prefix):
-    if not VLLM_AVAILABLE:
-        return None
+    from sglang.srt.layers.moe.fused_moe_triton.layer import FusedMoE
+
+    if isinstance(layer, FusedMoE):
+        return GPTQMarlinMoEMethod(self)
 
     try:
         from vllm.model_executor.layers.quantization.gptq import GPTQLinearMethod
