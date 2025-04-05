@@ -225,7 +225,10 @@ class DeepseekV3ForCausalLMNextN(DeepseekV3ForCausalLM):
                 # name will be updated to mlp.experts[0].gate_up_proj, which
                 # will then be updated below in expert_params_mapping
                 # for mlp.experts[0].gate_gate_up_proj, which breaks load.
-                if ("mlp.experts." in name) and name not in params_dict:
+                # Skip experts that are not assigned to this worker.
+                if (
+                    "mlp.experts." in name or "mlp.shared_experts." in name
+                ) and name not in params_dict:
                     continue
                 name = name.replace(weight_name, param_name)
                 # Skip loading extra bias for GPTQ models.
@@ -255,7 +258,11 @@ class DeepseekV3ForCausalLMNextN(DeepseekV3ForCausalLM):
                     # Skip loading extra bias for GPTQ models.
                     if name.endswith(".bias") and name not in params_dict:
                         continue
-
+                    # Skip experts that are not assigned to this worker.
+                    if (
+                        "mlp.experts." in name or "mlp.shared_experts." in name
+                    ) and name not in params_dict:
+                        continue
                     param = params_dict[name]
                     weight_loader = getattr(
                         param, "weight_loader", default_weight_loader
